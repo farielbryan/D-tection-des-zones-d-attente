@@ -1,0 +1,14 @@
+[project]
+name = "clustering-vessel"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dbscan>=1.0.0",
+    "folium>=0.20.0",
+    "matplotlib>=3.10.7",
+    "pandas>=2.3.3",
+    "shapely>=2.1.2",
+    "streamlit>=1.53.0",
+]
