@@ -146,6 +146,7 @@ dependencies = [
     { name = "pandas" },
     { name = "shapely" },
     { name = "streamlit" },
+    { name = "streamlit-folium" },
 ]
 
 [package.metadata]
@@ -156,6 +157,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "shapely", specifier = ">=2.1.2" },
     { name = "streamlit", specifier = ">=1.53.0" },
+    { name = "streamlit-folium", specifier = ">=0.26.1" },
 ]
 
 [[package]]
@@ -1184,6 +1186,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2a/b1/5e5fd38d4a5f97163ff071d76e8d6b3aa43e03f86bf94fd0265c43e43fa3/streamlit-1.53.0.tar.gz", hash = "sha256:0114116d34589f2e652bf4ac735a3aca69807e659f92f99c98e7b620d000838f", size = 8650270, upload-time = "2026-01-14T19:52:24.94Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/54/47ed40f34403205b2c9aab04472e864d1b496b4381b9bf408cf2c20e144c/streamlit-1.53.0-py3-none-any.whl", hash = "sha256:e8b65210bd1a785d121340b794a47c7c912d8da401af9e4403e16c84e3bc4410", size = 9110100, upload-time = "2026-01-14T19:52:22.589Z" },
+]
+
+[[package]]
+name = "streamlit-folium"
+version = "0.26.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "branca" },
+    { name = "folium" },
+    { name = "jinja2" },
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/56/60/f421acddc2de07624c4ade38c68fa1cbd811bd1e4dd00f2b2a37329fc73b/streamlit_folium-0.26.1.tar.gz", hash = "sha256:e2bcc9fe3d16801d7f29f1309801145f6a3fedebb23f1950bc920b058b61b072", size = 521698, upload-time = "2026-01-08T14:17:35.59Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/36/cc/8c94bb963112b3017a11835fe99f58b755865d0b4ffdfae9eac0292f1021/streamlit_folium-0.26.1-py3-none-any.whl", hash = "sha256:81c369b89475fa13cb95a5bb7ea548d8aee1ea081b25b03df1e7b057d186c77d", size = 523695, upload-time = "2026-01-08T14:17:36.676Z" },
 ]
 
 [[package]]
