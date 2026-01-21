@@ -7,7 +7,6 @@ from shapely.geometry import MultiPoint, Polygon
 import folium
 from streamlit_folium import st_folium
 import os
-import io
 
 # --- Configuration de la page ---
 st.set_page_config(page_title="Geospatial Clustering", layout="wide")
@@ -19,41 +18,88 @@ eps = st.sidebar.slider("Rayon (EPS) en degrés", 0.001, 0.100, 0.005, format="%
 min_samples = st.sidebar.number_input("Min points par cluster", min_value=1, value=20)
 sample_limit = st.sidebar.slider("Limite d'échantillonnage", 1000, 100000, 45000)
 
-# --- Fonctions Utilitaires ---
-def detect_lon_lat(df):
-    cols_lower = {c.lower(): c for c in df.columns}
-    lon_keys = ["longitude", "lon", "long", "lng"]
+# --- Fonctions avec MISE EN CACHE (C'est ça qui empêche les bugs) ---
+
+@st.cache_data
+def load_data(file_path_or_buffer, file_type):
+    """Charge les données et les met en cache pour ne pas recharger à chaque clic."""
+    try:
+        if file_type == 'csv':
+            # Si c'est un buffer (upload), on doit remettre le curseur au début
+            if hasattr(file_path_or_buffer, 'seek'):
+                file_path_or_buffer.seek(0)
+                content = file_path_or_buffer.getvalue().decode("utf-8").splitlines()
+                sep = ',' if content[0].count(',') >= content[0].count(';') else ';'
+                file_path_or_buffer.seek(0)
+                return pd.read_csv(file_path_or_buffer, sep=sep)
+            else:
+                # Lecture fichier local
+                with open(file_path_or_buffer, 'r', encoding='utf-8') as f:
+                    first_line = f.readline()
+                    sep = ',' if first_line.count(',') >= first_line.count(';') else ';'
+                return pd.read_csv(file_path_or_buffer, sep=sep)
+        else:
+            return pd.read_excel(file_path_or_buffer)
+    except Exception as e:
+        return None
+
+@st.cache_data
+def detect_lon_lat(columns):
+    """Détecte les noms des colonnes une seule fois."""
+    cols_lower = {c.lower(): c for c in columns}
+    lon_keys = ["longitude", "lon", "long", "lng", "x"]
     lat_keys = ["latitude", "lat", "y"]
     lon_col = next((cols_lower[k] for k in lon_keys if k in cols_lower), None)
     lat_col = next((cols_lower[k] for k in lat_keys if k in cols_lower), None)
-    if lon_col and lat_col: return lon_col, lat_col
-    if df.shape[1] >= 3: return df.columns[1], df.columns[2]
-    return None, None
+    return lon_col, lat_col
 
-def extract_coords(df, lon_col, lat_col):
+@st.cache_data
+def process_coords(df, lon_col, lat_col, limit):
+    """Nettoie et échantillonne les données."""
+    if len(df) > limit:
+        df = df.sample(n=limit, random_state=42)
+    
     coords = df[[lon_col, lat_col]].copy()
     coords.columns = ["lon", "lat"]
     for col in ["lon", "lat"]:
-        coords[col] = pd.to_numeric(coords[col].astype(str).str.replace(',', '.'), errors="coerce")
+        # Conversion robuste string -> float
+        if coords[col].dtype == object:
+            coords[col] = pd.to_numeric(coords[col].astype(str).str.replace(',', '.'), errors="coerce")
+            
     coords = coords.dropna().reset_index(drop=True)
     coords = coords[coords["lon"].between(-180, 180) & coords["lat"].between(-90, 90)]
     return coords
 
-def cluster_and_hulls(coords, eps, min_samples):
+@st.cache_data
+def run_dbscan(coords, eps, min_samples):
+    """C'est le calcul lourd. Le cache évite de le refaire si on ne touche pas aux sliders."""
     if len(coords) == 0: return coords, {}, 0, 0
+    
+    # Clustering
     db = DBSCAN(eps=eps, min_samples=min_samples).fit(coords[["lon", "lat"]].values)
-    coords = coords.copy()
-    coords["cluster"] = db.labels_
+    
+    # Préparation résultats
+    coords_result = coords.copy()
+    coords_result["cluster"] = db.labels_
+    
+    # Calcul polygones
     polygons = {}
-    for cid in sorted(set(db.labels_)):
-        if cid == -1: continue
-        pts = coords[coords["cluster"] == cid][["lon", "lat"]].values
-        polygons[cid] = MultiPoint(pts).convex_hull if len(pts) > 1 else pts[0]
-    n_clusters = len(set(db.labels_)) - (1 if -1 in db.labels_ else 0)
+    unique_labels = set(db.labels_)
+    if -1 in unique_labels: unique_labels.remove(-1)
+    
+    for cid in sorted(unique_labels):
+        pts = coords_result[coords_result["cluster"] == cid][["lon", "lat"]].values
+        if len(pts) > 2:
+            hull = MultiPoint(pts).convex_hull
+            polygons[cid] = hull
+            
+    n_clusters = len(unique_labels)
     n_noise = list(db.labels_).count(-1)
-    return coords, polygons, n_clusters, n_noise
+    
+    return coords_result, polygons, n_clusters, n_noise
 
-# --- Gestion des Données ---
+# --- Logique Principale ---
+
 DATA_DIR = "data"
 available_ports = [f for f in os.listdir(DATA_DIR) if f.endswith(".csv")] if os.path.exists(DATA_DIR) else []
 
@@ -63,80 +109,82 @@ source_mode = st.sidebar.radio("Choisir la source :", ["Fichier pré-chargé", "
 df = None
 file_name = "resultats"
 
-try:
-    if source_mode == "Fichier pré-chargé":
-        if available_ports:
-            selected_file = st.sidebar.selectbox("Sélectionnez un port :", available_ports)
-            file_path = os.path.join(DATA_DIR, selected_file)
-            # Lecture du CSV local
-            with open(file_path, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                sep = ',' if first_line.count(',') >= first_line.count(';') else ';'
-            df = pd.read_csv(file_path, sep=sep)
-            file_name = os.path.splitext(selected_file)[0]
-        else:
-            st.warning("Aucun fichier CSV trouvé dans le dossier 'data/'.")
+# Chargement des données (optimisé)
+if source_mode == "Fichier pré-chargé":
+    if available_ports:
+        selected_file = st.sidebar.selectbox("Sélectionnez un port :", available_ports)
+        file_path = os.path.join(DATA_DIR, selected_file)
+        df = load_data(file_path, 'csv')
+        file_name = os.path.splitext(selected_file)[0]
+    else:
+        st.warning("Aucun fichier CSV trouvé dans le dossier 'data/'.")
+else:
+    uploaded_file = st.file_uploader("Glissez votre fichier ici", type=["csv", "xlsx"])
+    if uploaded_file:
+        file_name = os.path.splitext(uploaded_file.name)[0]
+        ftype = 'csv' if uploaded_file.name.endswith('.csv') else 'xlsx'
+        df = load_data(uploaded_file, ftype)
+
+# --- Exécution ---
+if df is not None:
+    lon_col, lat_col = detect_lon_lat(df.columns)
+    
+    if lon_col and lat_col:
+        # Nettoyage (Mis en cache)
+        coords = process_coords(df, lon_col, lat_col, sample_limit)
+        
+        # Clustering (Mis en cache -> Super rapide au rechargement)
+        with st.spinner('Calcul des clusters en cours...'):
+            coords_result, polygons, n_clusters, n_noise = run_dbscan(coords, eps, min_samples)
+
+        # Affichage métriques
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Points total", len(coords_result))
+        col2.metric("Clusters détectés", n_clusters)
+        col3.metric("Bruit (Points isolés)", n_noise)
+
+        # --- Carte Folium ---
+        # On centre la carte
+        center = [coords_result["lat"].mean(), coords_result["lon"].mean()]
+        m = folium.Map(location=center, zoom_start=11, tiles="Cartodb Positron")
+
+        # Ajout des polygones (Zones)
+        for cid, poly in polygons.items():
+            if isinstance(poly, Polygon):
+                locations = [(y, x) for x, y in poly.exterior.coords]
+                folium.Polygon(
+                    locations, 
+                    color="orange", 
+                    weight=2,
+                    fill=True, 
+                    fill_opacity=0.4,
+                    tooltip=f"Cluster {cid}"
+                ).add_to(m)
+
+        # Ajout des points (Échantillon léger pour l'affichage uniquement)
+        viz_sample = coords_result.sample(min(len(coords_result), 1000))
+        for _, row in viz_sample.iterrows():
+            c = "#ff0000" if row['cluster'] == -1 else "#3388ff"
+            folium.CircleMarker(
+                [row['lat'], row['lon']], 
+                radius=1.5, 
+                color=c, 
+                fill=True
+            ).add_to(m)
+
+        # AFFICHE LA CARTE SANS RECHARGER L'APP QUAND ON CLIQUE DESSUS
+        st_folium(m, width=None, height=500, returned_objects=[])
+
+        # --- Export CSV ---
+        # Préparation du CSV en mémoire
+        csv = coords_result.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Télécharger les résultats (CSV)",
+            data=csv,
+            file_name=f"{file_name}_clustered.csv",
+            mime="text/csv",
+        )
 
     else:
-        uploaded_file = st.file_uploader("Glissez votre fichier ici", type=["csv", "xlsx"])
-        if uploaded_file:
-            file_name = os.path.splitext(uploaded_file.name)[0]
-            if uploaded_file.name.endswith('.csv'):
-                content = uploaded_file.getvalue().decode("utf-8").splitlines()
-                sep = ',' if content[0].count(',') >= content[0].count(';') else ';'
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=sep)
-            else:
-                df = pd.read_excel(uploaded_file)
-
-    # --- Traitement ---
-    if df is not None:
-        if len(df) > sample_limit:
-            df = df.sample(n=sample_limit, random_state=42)
-            st.info(f"Données échantillonnées à {sample_limit} lignes pour la performance.")
-
-        lon_col, lat_col = detect_lon_lat(df)
-        
-        if lon_col and lat_col:
-            coords = extract_coords(df, lon_col, lat_col)
-            
-            with st.spinner('Calcul des clusters en cours...'):
-                coords, polygons, n_clusters, n_noise = cluster_and_hulls(coords, eps, min_samples)
-
-            # --- Résultats ---
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Points total", len(coords))
-            col2.metric("Clusters", n_clusters)
-            col3.metric("Bruit", n_noise)
-
-            # --- Carte ---
-            center = [coords["lat"].mean(), coords["lon"].mean()]
-            m = folium.Map(location=center, zoom_start=11, tiles="Cartodb Positron")
-            
-            # Points (échantillon pour la carte pour ne pas lagger)
-            viz_sample = coords.sample(min(len(coords), 2000))
-            for _, row in viz_sample.iterrows():
-                c = "red" if row['cluster'] == -1 else "blue"
-                folium.CircleMarker([row['lat'], row['lon']], radius=1, color=c, fill=True).add_to(m)
-
-            # Polygones
-            for cid, poly in polygons.items():
-                if isinstance(poly, Polygon):
-                    locations = [(y, x) for x, y in poly.exterior.coords]
-                    folium.Polygon(locations, color="orange", fill=True, fill_opacity=0.4).add_to(m)
-
-            st_folium(m, width=None, height=500)
-
-            # --- Export CSV ---
-            csv = coords.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Télécharger les résultats (CSV)",
-                data=csv,
-                file_name=f"{file_name}_clustered.csv",
-                mime="text/csv",
-            )
-        else:
-            st.error("Impossible de détecter les colonnes longitude/latitude.")
-
-except Exception as e:
-    st.error(f"Une erreur est survenue : {e}")
+        st.error(f"Colonnes non trouvées. Colonnes disponibles : {list(df.columns)}")
